@@ -7,7 +7,7 @@ import (
 	"os/exec"
 )
 
-// A ShufWordsReader is an io.ReadCloser which wraps an exec.Cmd and it's stdout stream
+// A ShufWordsReader is an io.ReadCloser+io.Seeker which wraps an exec.Cmd and it's stdout stream
 // for use as a source in a WordStreamer. This has been seperated out of WordStream
 // primarily for testing purposes.
 type ShufWordsReader struct {
@@ -58,6 +58,34 @@ func (sf *ShufWordsReader) Close() error {
 	if err := sf.cmd.Process.Kill(); err != nil {
 		return fmt.Errorf("error killing ShufWordsReader: %s", err)
 	}
+	sf.cmd.Wait()
+	return nil
+}
+
+func (sf *ShufWordsReader) Seek(offset int64, whence int) (int64, error) {
+	if whence != io.SeekStart || offset != 0 {
+		return 0, fmt.Errorf("ShufWordsReader only supports seeking to SeekStart + 0")
+	}
+	if err := sf.Close(); err != nil {
+		return 0, err
+	}
+	if err := sf.reset(); err != nil {
+		return 0, err
+	}
+	return 0, nil
+}
+
+func (sf *ShufWordsReader) reset() (err error) {
+	cmd := exec.Command(sf.cmd.Path, sf.cmd.Args[1:]...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	sf.cmd = cmd
+	sf.stdout = stdout
 	return nil
 }
 

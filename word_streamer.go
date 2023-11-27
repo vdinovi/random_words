@@ -19,6 +19,7 @@ type WordStreamer struct {
 	close     chan chan error
 	closeOnce sync.Once
 	transform Transform
+	infinite  bool
 }
 
 // NewWordStreamer returns a new WordStreamer
@@ -38,6 +39,13 @@ func NewWordStreamer(source io.ReadCloser, transforms ...Transform) (stream *Wor
 	}
 	go stream.process()
 	return stream, nil
+}
+
+// Sets the Word Streamer into infinite mode where upon reaching the end of the source, if possible, will
+// try to seek back to the begining and continue the stream. If the source is not an io.Seeker, then it will
+// close the stream as normal.
+func (stream *WordStreamer) SetInfiniteMode(enabled bool) {
+	stream.infinite = enabled
 }
 
 // Close initiates closing exactly once in which case it returns
@@ -75,9 +83,29 @@ func (stream *WordStreamer) process() {
 		close(stream.close)
 		stream.close = nil
 	}()
+SCAN:
 	scanner := bufio.NewScanner(stream.source)
 	var err error
-	for scanner.Scan() {
+	for {
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				// error while scanning: send error and close
+				stream.errors <- err
+				break
+			} else if stream.infinite {
+				// infinite mode: attempt to seek to beginning and restart if possible, otherwise fallthrough
+				if seeker, ok := stream.source.(io.Seeker); ok {
+					if _, err := seeker.Seek(0, io.SeekStart); err == nil {
+						goto SCAN
+					} else {
+						stream.errors <- err
+					}
+				}
+			}
+			// send eof and close
+			stream.errors <- io.EOF
+			break
+		}
 		text := scanner.Text()
 		if text, err = stream.transform(text); err != nil {
 			stream.errors <- err
@@ -96,11 +124,6 @@ func (stream *WordStreamer) process() {
 	}
 	if err := stream.source.Close(); err != nil {
 		stream.errors <- err
-	}
-	if err := scanner.Err(); err != nil {
-		stream.errors <- err
-	} else {
-		stream.errors <- io.EOF
 	}
 }
 
